@@ -1,7 +1,8 @@
 #![feature(if_let_guard)]
-#![warn(clippy::pedantic)]
 #![feature(let_chains)]
 #![feature(async_closure)]
+#![warn(clippy::pedantic)]
+#![allow(clippy::type_complexity)]
 
 use aws_sdk_ec2 as ec2;
 use clap::Parser;
@@ -35,7 +36,7 @@ const DEFAULT_INSTANCES: [(InstanceType, &str); 2] = [
 const DEFAULT_KEY_NAME: &str = "test-aws-key-pair-2";
 
 /// The default port used by ec2 for ssh.
-const EC2_SSH_PORT: u16 = 22;
+const EC2_SSH_PORT: VolumeSize = 22;
 
 // TODO This should only be default for optional command line argument.
 const INSTANCE_POLL_STATE_SLEEP: Duration = Duration::from_secs(1);
@@ -67,6 +68,10 @@ const DEFAULT_COMMAND_TIMEOUT_SECS: u64 = 300;
 
 const DEFAULT_PATH: &str = "./";
 
+const DEFAULT_SIZE: VolumeSize = 16;
+
+type VolumeSize = u16;
+
 #[derive(Parser, Debug)]
 struct Args {
     #[arg(long)]
@@ -86,6 +91,9 @@ struct Args {
     /// The command to run on the instance.
     #[arg(long)]
     command: Option<String>,
+    /// The size in GB of each EBS volume to attach to each instance.
+    #[arg(long)]
+    size: Option<VolumeSize>,
     /// The EC2 instance types and AMI to use to launch instances.
     #[arg(long, value_delimiter = ',')]
     instances: Vec<InstanceType>,
@@ -205,7 +213,7 @@ enum ExecError {
 async fn main() -> Result<(), MainError> {
     tracing_subscriber::fmt().with_thread_ids(true).init();
 
-    let (key_name, timeout, security_group_name, instances, command, path) = parse_args();
+    let (key_name, timeout, security_group_name, instances, command, path, size) = parse_args();
 
     let result = create_resources(
         key_name,
@@ -214,6 +222,7 @@ async fn main() -> Result<(), MainError> {
         timeout,
         command,
         path,
+        size,
     )
     .await?;
 
@@ -229,6 +238,7 @@ fn parse_args() -> (
     Vec<(InstanceType, String)>,
     String,
     String,
+    VolumeSize,
 ) {
     info!("Parsing command line arguments");
     let args = Args::parse();
@@ -262,6 +272,7 @@ fn parse_args() -> (
         .command
         .unwrap_or_else(|| String::from(DEFAULT_COMMAND));
     let path = args.path.unwrap_or_else(|| String::from(DEFAULT_PATH));
+    let size = args.size.unwrap_or(DEFAULT_SIZE);
 
     (
         key_name,
@@ -270,6 +281,7 @@ fn parse_args() -> (
         instances,
         command,
         path,
+        size,
     )
 }
 
@@ -281,6 +293,7 @@ async fn create_resources(
     timeout: Duration,
     command: String,
     path: String,
+    size: VolumeSize,
 ) -> Result<Vec<Option<i32>>, MainError> {
     #[allow(clippy::enum_glob_use)]
     use MainError::*;
@@ -339,6 +352,7 @@ async fn create_resources(
         path,
         key_material,
         command,
+        size,
     ));
 
     for (instance_type, ami) in instances {
@@ -354,7 +368,8 @@ async fn create_resources(
         codes.push(code);
     }
 
-    let (client, key_name, security_group_id, _timeout, _path, _key_material, _command) = &*data;
+    let (client, key_name, security_group_id, _timeout, _path, _key_material, _command, _size) =
+        &*data;
 
     info!("Deleting key pair");
     let builder = client
@@ -383,6 +398,7 @@ async fn run_instance(
         String,
         String,
         String,
+        VolumeSize,
     )>,
     instance_type: InstanceType,
     ami: String,
@@ -390,7 +406,7 @@ async fn run_instance(
     #[allow(clippy::enum_glob_use)]
     use MainError::*;
 
-    let (client, key_name, security_group_id, timeout, path, private_key, command) = &*data;
+    let (client, key_name, security_group_id, timeout, path, private_key, command, size) = &*data;
 
     // Launches instance
     let (public_ip_address, instance_id) = launch_instance(
@@ -400,6 +416,7 @@ async fn run_instance(
         key_name,
         security_group_id,
         timeout,
+        size,
     )
     .await?;
 
@@ -529,6 +546,11 @@ async fn wait_until_running(
     }
 }
 
+/// Using the default as recommend here
+/// <https://docs.rs/aws-sdk-ec2/0.33.0/aws_sdk_ec2/types/builders/struct.BlockDeviceMappingBuilder.html#method.set_device_name>
+/// and here <https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/device_naming.html>.
+const DEFAULT_BLOCK_DEVICE_NAME: &str = "/dev/sdh";
+
 /// Launches an EC2 instance and returns the public ip address.
 async fn launch_instance(
     client: &ec2::Client,
@@ -537,6 +559,7 @@ async fn launch_instance(
     key_name: &str,
     security_group_id: &str,
     timeout: &Duration,
+    size: &VolumeSize,
 ) -> Result<(String, String), MainError> {
     #[allow(clippy::enum_glob_use)]
     use MainError::*;
@@ -549,7 +572,16 @@ async fn launch_instance(
         .set_max_count(Some(1))
         .set_min_count(Some(1))
         .set_key_name(Some(String::from(key_name)))
-        .set_security_group_ids(Some(vec![String::from(security_group_id)]));
+        .set_security_group_ids(Some(vec![String::from(security_group_id)]))
+        .set_block_device_mappings(Some(vec![aws_sdk_ec2::types::BlockDeviceMapping::builder(
+        )
+        .ebs(
+            aws_sdk_ec2::types::EbsBlockDevice::builder()
+                .set_volume_size(Some(i32::from(*size)))
+                .build(),
+        )
+        .set_device_name(Some(String::from(DEFAULT_BLOCK_DEVICE_NAME)))
+        .build()]));
     let run_instances_response = builder.send().await.map_err(RunInstances)?;
 
     let Some(
