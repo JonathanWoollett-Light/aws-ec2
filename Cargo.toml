@@ -1,6 +1,6 @@
 [package]
 name = "aws-ec2"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 description = "A tool to run commands on AWS EC2 instances."
 license = "Apache-2.0"
