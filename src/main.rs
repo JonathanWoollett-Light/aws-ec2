@@ -32,9 +32,6 @@ const DEFAULT_INSTANCES: [(InstanceType, &str); 2] = [
     (InstanceType::T4gMedium, "ami-0e3f80b3d2a794117"),
 ];
 
-/// The default key pair name.
-const DEFAULT_KEY_NAME: &str = "test-aws-key-pair-2";
-
 /// The default port used by ec2 for ssh.
 const EC2_SSH_PORT: VolumeSize = 22;
 
@@ -42,16 +39,10 @@ const EC2_SSH_PORT: VolumeSize = 22;
 const INSTANCE_POLL_STATE_SLEEP: Duration = Duration::from_secs(1);
 
 // TODO This should only be default for optional command line argument.
-const DEFAULT_SECURITY_GROUP_NAME: &str = "test-aws-security-group-2";
-
-// TODO This should only be default for optional command line argument.
 const SECURITY_GROUP_DESCRIPTION: &str = "test-aws-security-group-description";
 
-/// The default archive name.
-const DEFAULT_ARCHIVE_NAME: &str = "archive.tar.gz";
-
 /// Default command to run on the host.
-const DEFAULT_COMMAND: &str = "cat /proc/cpuinfo && ls";
+const DEFAULT_COMMAND: &str = "cat /proc/cpuinfo && uname -a && ls";
 
 // TODO Remove this.
 const RUN_BUFFER: Duration = Duration::from_secs(30);
@@ -245,11 +236,11 @@ fn parse_args() -> (
 
     let key_name = args
         .key_name
-        .unwrap_or_else(|| String::from(DEFAULT_KEY_NAME));
+        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
     let timeout = Duration::from_secs(args.timeout.unwrap_or(DEFAULT_COMMAND_TIMEOUT_SECS));
     let security_group_name = args
         .security_group_name
-        .unwrap_or_else(|| String::from(DEFAULT_SECURITY_GROUP_NAME));
+        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
 
     let instances = {
         assert_eq!(args.instances.len(), args.amis.len());
@@ -422,9 +413,10 @@ async fn run_instance(
     .await?;
 
     let ssh = create_ssh(&public_ip_address, timeout, private_key)?;
+    let remote_path = format!("/tmp/{}", uuid::Uuid::new_v4());
 
     // Transfers source code
-    transfer_source(path, &ssh, timeout).await?;
+    transfer_source(path, &remote_path, &ssh, timeout).await?;
 
     let code = exec(&ssh, command, timeout).map_err(Exec)?;
 
@@ -624,27 +616,24 @@ async fn get_archive_data(dir: &str) -> Result<&[u8], MainError> {
 
     static ARCHIVE: tokio::sync::OnceCell<Vec<u8>> = tokio::sync::OnceCell::const_new();
     let init = async || -> Result<Vec<u8>, MainError> {
+        let archive_path = format!("/tmp/{}", uuid::Uuid::new_v4());
+
         info!("Compressing source");
         let tar_gz = std::fs::OpenOptions::new()
             .write(true)
             .create(true)
             .truncate(true)
-            .open(DEFAULT_ARCHIVE_NAME)
+            .open(&archive_path)
             .map_err(CreateArchive)?;
         let enc = GzEncoder::new(tar_gz, Compression::default());
         let mut tar = tar::Builder::new(enc);
-        let ignore: [String; 4] = [
-            String::from("./.git"),
-            String::from("./.gitignore"),
-            String::from("./target"),
-            format!("./{DEFAULT_ARCHIVE_NAME}"),
-        ];
+        let ignore: [&str; 3] = ["./.git", "./.gitignore", "./target"];
         let paths = std::fs::read_dir(dir).map_err(ReadDir)?;
         for path in paths {
             let entry = path.map_err(ReadEntry)?;
             let path_buf = entry.path();
             let path_string = path_buf.display().to_string();
-            if !ignore.contains(&path_string) {
+            if !ignore.contains(&path_string.as_str()) {
                 let file_type = entry.file_type().map_err(ReadFileType)?;
                 if file_type.is_dir() {
                     tar.append_dir_all(&path_string, &path_string)
@@ -656,10 +645,7 @@ async fn get_archive_data(dir: &str) -> Result<&[u8], MainError> {
         }
         tar.into_inner().map_err(CompleteArchive)?;
 
-        let mut file = OpenOptions::new()
-            .read(true)
-            .open(DEFAULT_ARCHIVE_NAME)
-            .unwrap();
+        let mut file = OpenOptions::new().read(true).open(&archive_path).unwrap();
         let mut buffer = Vec::new();
         file.read_to_end(&mut buffer).unwrap();
 
@@ -670,7 +656,8 @@ async fn get_archive_data(dir: &str) -> Result<&[u8], MainError> {
 
 /// Transfers source files to the instance
 async fn transfer_source(
-    path: &str,
+    local_path: &str,
+    remote_path: &str,
     ssh: &ssh2::Session,
     timeout: &Duration,
 ) -> Result<(), MainError> {
@@ -678,7 +665,7 @@ async fn transfer_source(
     use MainError::*;
 
     // Get source code data when stored in an archive.
-    let data = get_archive_data(path).await.unwrap();
+    let data = get_archive_data(local_path).await.unwrap();
 
     info!("Copying source");
 
@@ -691,12 +678,7 @@ async fn transfer_source(
             return Err(SshHandshakeTimeout);
         }
 
-        match ssh.scp_send(
-            Path::new(DEFAULT_ARCHIVE_NAME),
-            0o644,
-            data.len() as u64,
-            None,
-        ) {
+        match ssh.scp_send(Path::new(remote_path), 0o644, data.len() as u64, None) {
             Ok(c) => break c,
             Err(err) if err.code() == SSH2_WOULD_BLOCK => continue,
             Err(err) => return Err(ScpSend(err)),
@@ -751,9 +733,7 @@ async fn transfer_source(
     }
 
     info!("Decompressing source");
-    let Some(code) =
-        exec(ssh, &format!("tar -xf {DEFAULT_ARCHIVE_NAME}"), timeout).map_err(Exec)?
-    else {
+    let Some(code) = exec(ssh, &format!("tar -xf {remote_path}"), timeout).map_err(Exec)? else {
         return Err(DecompressTimeout);
     };
     if code != 0 {
