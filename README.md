@@ -1,6 +1,35 @@
 # aws-ec2
 
+[![Crates.io](https://img.shields.io/crates/v/aws-ec2)](https://crates.io/crates/aws-ec2)
+
 A tool to run commands on AWS EC2 instances.
+
+### Purpose
+
+When developing real world software we often want to test our code across many specific enviroments; often the enviroments in which it will be deployed, which will often be AWS EC2.
+
+This can either require services like [buildjet](https://buildjet.com/for-github-actions) or more complex infrastructure setups that can absorb developer time.
+
+This project was sparked from my work on [firecracker](https://github.com/firecracker-microvm/firecracker) and [nix](https://github.com/nix-rust/nix) and thinking about how to simplify their respective CIs and maintain the same level of platform coverage.
+
+### Overview
+
+It creates its own resources and cleans up after itself.
+
+The process approximately follows:
+
+1. Creates key pair.
+2. Creates security group.
+3. Compresses `--path` into `archive.tar.gz`.
+4. For each pair from `--instances` and `--amis`:
+   1. Start the instance.
+   2. Copy across `archive.tar.gz`
+   3. Decompress `archive.tar.gz`
+   4. Run `--command`
+ 5. Terminate instance
+5. Delete key pair.
+6. Delete security group.
+7. Return exit code (0 if all commands return 0, else 1).
 
 ### Installation
 
