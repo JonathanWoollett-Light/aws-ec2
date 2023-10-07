@@ -6,7 +6,6 @@ description = "A tool to run commands on AWS EC2 instances."
 license = "Apache-2.0"
 
 repository = "https://github.com/JonathanWoollett-Light/aws-ec2"
-documentation = "https://docs.rs/aws-ec2/"
 readme = "./README.md"
 
 [dependencies]
