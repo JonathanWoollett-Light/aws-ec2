@@ -211,7 +211,7 @@ enum ExecError {
 
 #[tokio::main]
 async fn main() -> Result<(), MainError> {
-    tracing_subscriber::fmt().with_thread_ids(true).init();
+    tracing_subscriber::fmt().init();
 
     let (key_name, timeout, security_group_name, instances, command, path, size) = parse_args();
 
@@ -389,6 +389,7 @@ async fn create_resources(
     Ok(codes)
 }
 
+#[tracing::instrument(skip(data))]
 async fn run_instance(
     data: Arc<(
         ec2::Client,
