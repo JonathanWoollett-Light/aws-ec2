@@ -18,7 +18,7 @@ AWS_ACCESS_KEY_ID=<your aws access key> AWS_SECRET_ACCESS_KEY=<your aws secret a
 
 ### Default example
 
-By default it boots 2 instances (`t2.medium` Ubuntu 22.04 and `t4g.medium` Ubuntu 22.04) and runs the command `cat /proc/cpuinfo && ls`. See below.
+By default it boots 2 instances (`t2.medium` Ubuntu 22.04 and `t4g.medium` Ubuntu 22.04) and runs the command `cat /proc/cpuinfo && ls`.
 
 ```
 jonathan@jonathan-Latitude-9510:~/Projects/test-aws$ AWS_ACCESS_KEY_ID=<your aws access key> AWS_SECRET_ACCESS_KEY=<your aws secret access key> AWS_DEFAULT_REGION=<your aws region> aws-ec2
