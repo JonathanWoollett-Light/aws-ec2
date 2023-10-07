@@ -87,10 +87,10 @@ struct Args {
     #[arg(long)]
     command: Option<String>,
     /// The EC2 instance types and AMI to use to launch instances.
-    #[arg(long, value_delimiter=',')]
+    #[arg(long, value_delimiter = ',')]
     instances: Vec<InstanceType>,
     /// The EC2 instance types and AMI to use to launch instances.
-    #[arg(long, value_delimiter=',')]
+    #[arg(long, value_delimiter = ',')]
     amis: Vec<String>,
 }
 
@@ -201,69 +201,9 @@ enum ExecError {
     Exit(ssh2::Error),
 }
 
-fn create_ssh(
-    public_ip_address: &str,
-    timeout: &Duration,
-    private_key: &str,
-) -> Result<ssh2::Session, MainError> {
-    #[allow(clippy::enum_glob_use)]
-    use MainError::*;
-
-    // I have no idea why this is needed but for some reason we need to wait for ssh to work, I
-    // don't know what is being waited on, this should poll.
-    info!("Sleeping for {SSH_STARTUP_BUFFER:?}.");
-    sleep(SSH_STARTUP_BUFFER);
-
-    info!("Connecting SSH");
-    let ipv4_address = std::net::Ipv4Addr::from_str(public_ip_address).map_err(PublicIpParse)?;
-    let socket_address =
-        std::net::SocketAddr::V4(std::net::SocketAddrV4::new(ipv4_address, EC2_SSH_PORT));
-    info!("socket_address: {socket_address}");
-    let tcp = std::net::TcpStream::connect(socket_address).map_err(TcpStreamConnect)?;
-    tcp.set_nonblocking(true).unwrap();
-    let mut ssh = ssh2::Session::new().map_err(SshSession)?;
-    ssh.set_tcp_stream(tcp);
-    ssh.set_blocking(false);
-
-    // SSH handshake
-    let start = Instant::now();
-    info!("SSH handshake");
-    loop {
-        match ssh.handshake() {
-            Ok(()) => break,
-            Err(err) if err.code() == SSH2_WOULD_BLOCK => {
-                if start.elapsed() > *timeout {
-                    return Err(SshHandshakeTimeout);
-                }
-            }
-            Err(err) => return Err(SshHandshake(err)),
-        }
-    }
-
-    // SSH authorize
-    let start = Instant::now();
-    info!("SSH authorize");
-    loop {
-        match ssh.userauth_pubkey_memory("ubuntu", None, private_key, None) {
-            Ok(()) => break,
-            Err(err) if err.code() == SSH2_WOULD_BLOCK => {
-                if start.elapsed() > *timeout {
-                    return Err(SshHandshakeTimeout);
-                }
-            }
-            Err(err) => return Err(SshAuthSetup(err)),
-        }
-    }
-
-    if !ssh.authenticated() {
-        return Err(SshAuthFailed);
-    }
-    Ok(ssh)
-}
-
 #[tokio::main]
 async fn main() -> Result<(), MainError> {
-    tracing_subscriber::fmt::init();
+    tracing_subscriber::fmt().with_thread_ids(true).init();
 
     let (key_name, timeout, security_group_name, instances, command, path) = parse_args();
 
@@ -480,6 +420,66 @@ async fn run_instance(
     builder.send().await.map_err(TerminateInstances)?;
 
     Ok(code)
+}
+
+fn create_ssh(
+    public_ip_address: &str,
+    timeout: &Duration,
+    private_key: &str,
+) -> Result<ssh2::Session, MainError> {
+    #[allow(clippy::enum_glob_use)]
+    use MainError::*;
+
+    // I have no idea why this is needed but for some reason we need to wait for ssh to work, I
+    // don't know what is being waited on, this should poll.
+    info!("Sleeping for {SSH_STARTUP_BUFFER:?}.");
+    sleep(SSH_STARTUP_BUFFER);
+
+    info!("Connecting SSH");
+    let ipv4_address = std::net::Ipv4Addr::from_str(public_ip_address).map_err(PublicIpParse)?;
+    let socket_address =
+        std::net::SocketAddr::V4(std::net::SocketAddrV4::new(ipv4_address, EC2_SSH_PORT));
+    info!("socket_address: {socket_address}");
+    let tcp = std::net::TcpStream::connect(socket_address).map_err(TcpStreamConnect)?;
+    tcp.set_nonblocking(true).unwrap();
+    let mut ssh = ssh2::Session::new().map_err(SshSession)?;
+    ssh.set_tcp_stream(tcp);
+    ssh.set_blocking(false);
+
+    // SSH handshake
+    let start = Instant::now();
+    info!("SSH handshake");
+    loop {
+        match ssh.handshake() {
+            Ok(()) => break,
+            Err(err) if err.code() == SSH2_WOULD_BLOCK => {
+                if start.elapsed() > *timeout {
+                    return Err(SshHandshakeTimeout);
+                }
+            }
+            Err(err) => return Err(SshHandshake(err)),
+        }
+    }
+
+    // SSH authorize
+    let start = Instant::now();
+    info!("SSH authorize");
+    loop {
+        match ssh.userauth_pubkey_memory("ubuntu", None, private_key, None) {
+            Ok(()) => break,
+            Err(err) if err.code() == SSH2_WOULD_BLOCK => {
+                if start.elapsed() > *timeout {
+                    return Err(SshHandshakeTimeout);
+                }
+            }
+            Err(err) => return Err(SshAuthSetup(err)),
+        }
+    }
+
+    if !ssh.authenticated() {
+        return Err(SshAuthFailed);
+    }
+    Ok(ssh)
 }
 
 /// Waits until the given instance is in the running state.
