@@ -54,7 +54,7 @@ aws-ec2 \
 --size 32 \
 --instances t2.medium,t4g.medium \
 --amis ami-0eb260c4d5475b901,ami-0e3f80b3d2a794117 \
---command "curl https://sh.rustup.rs -sSf | sh -s -- -y && ./cargo/bin/cargo test"
+--command "curl https://sh.rustup.rs -sSf | sh -s -- -y && sudo apt-get -y update && sudo apt -y install build-essential && $HOME/.cargo/bin/cargo test"
 ```
 
 ### Default example

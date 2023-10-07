@@ -9,7 +9,6 @@ use clap::Parser;
 use ec2::types::InstanceType;
 use flate2::write::GzEncoder;
 use flate2::Compression;
-use std::fs::OpenOptions;
 use std::io::ErrorKind::WouldBlock;
 use std::io::Read;
 use std::io::Write;
@@ -70,9 +69,6 @@ struct Args {
     /// Name of the SSH key pair used.
     #[arg(long)]
     key_name: Option<String>,
-    /// The name of the archive used to compress and transfer the source code in.
-    #[arg(long)]
-    archive: Option<String>,
     /// The name to use for the security group for instances.
     #[arg(long)]
     security_group_name: Option<String>,
@@ -138,8 +134,6 @@ enum MainError {
     SshAuthSetup(ssh2::Error),
     #[error("Failed SSH auth.")]
     SshAuthFailed,
-    #[error("Failed to create source archive: {0}")]
-    CreateArchive(std::io::Error),
     #[error("Failed to read directory: {0}")]
     ReadDir(std::io::Error),
     #[error("Failed to read entry: {0}")]
@@ -616,40 +610,31 @@ async fn get_archive_data(dir: &str) -> Result<&[u8], MainError> {
 
     static ARCHIVE: tokio::sync::OnceCell<Vec<u8>> = tokio::sync::OnceCell::const_new();
     let init = async || -> Result<Vec<u8>, MainError> {
-        let archive_path = format!("/tmp/{}", uuid::Uuid::new_v4());
-
-        info!("Compressing source");
-        let tar_gz = std::fs::OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .open(&archive_path)
-            .map_err(CreateArchive)?;
-        let enc = GzEncoder::new(tar_gz, Compression::default());
+        let mut tar_gz = Vec::new();
+        let enc = GzEncoder::new(&mut tar_gz, Compression::default());
         let mut tar = tar::Builder::new(enc);
-        let ignore: [&str; 3] = ["./.git", "./.gitignore", "./target"];
+        let ignore: [&str; 3] = ["/.git", "/.gitignore", "/target"];
+        info!("Reading local directory: {dir:?}");
         let paths = std::fs::read_dir(dir).map_err(ReadDir)?;
         for path in paths {
             let entry = path.map_err(ReadEntry)?;
             let path_buf = entry.path();
+            let name = path_buf.as_path().file_name().unwrap().to_str().unwrap();
             let path_string = path_buf.display().to_string();
+            info!("Inspecting: {path_string:?}");
             if !ignore.contains(&path_string.as_str()) {
                 let file_type = entry.file_type().map_err(ReadFileType)?;
                 if file_type.is_dir() {
-                    tar.append_dir_all(&path_string, &path_string)
-                        .map_err(AppendDir)?;
+                    tar.append_dir_all(name, &path_string).map_err(AppendDir)?;
                 } else if file_type.is_file() {
-                    tar.append_path(path_string).map_err(AppendFile)?;
+                    tar.append_path_with_name(path_string, name)
+                        .map_err(AppendFile)?;
                 }
             }
         }
         tar.into_inner().map_err(CompleteArchive)?;
 
-        let mut file = OpenOptions::new().read(true).open(&archive_path).unwrap();
-        let mut buffer = Vec::new();
-        file.read_to_end(&mut buffer).unwrap();
-
-        Ok(buffer)
+        Ok(tar_gz)
     };
     ARCHIVE.get_or_try_init(init).await.map(Vec::as_slice)
 }
