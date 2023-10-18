@@ -38,7 +38,7 @@ The process approximately follows:
 ### Installation
 
 ```
-cargo install aws-ec2
+cargo +nightly install aws-ec2
 ```
 
 ### Rust example
