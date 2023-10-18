@@ -56,8 +56,6 @@ const DELETE_SECURITY_GROUP_BUFFER: Duration = Duration::from_secs(120);
 
 const DEFAULT_COMMAND_TIMEOUT_SECS: u64 = 300;
 
-const DEFAULT_PATH: &str = "./";
-
 const DEFAULT_SIZE: VolumeSize = 16;
 
 type VolumeSize = u16;
@@ -222,7 +220,7 @@ fn parse_args() -> (
     String,
     Vec<(InstanceType, String)>,
     String,
-    String,
+    Option<String>,
     VolumeSize,
 ) {
     info!("Parsing command line arguments");
@@ -256,7 +254,7 @@ fn parse_args() -> (
     let command = args
         .command
         .unwrap_or_else(|| String::from(DEFAULT_COMMAND));
-    let path = args.path.unwrap_or_else(|| String::from(DEFAULT_PATH));
+    let path = args.path;
     let size = args.size.unwrap_or(DEFAULT_SIZE);
 
     (
@@ -277,7 +275,7 @@ async fn create_resources(
     security_group_name: String,
     timeout: Duration,
     command: String,
-    path: String,
+    path: Option<String>,
     size: VolumeSize,
 ) -> Result<Vec<Option<i32>>, MainError> {
     #[allow(clippy::enum_glob_use)]
@@ -381,7 +379,7 @@ async fn run_instance(
         String,
         String,
         Duration,
-        String,
+        Option<String>,
         String,
         String,
         VolumeSize,
@@ -410,7 +408,9 @@ async fn run_instance(
     let remote_path = format!("/tmp/{}", uuid::Uuid::new_v4());
 
     // Transfers source code
-    transfer_source(path, &remote_path, &ssh, timeout).await?;
+    if let Some(path) = path {
+        transfer_source(path, &remote_path, &ssh, timeout).await?;
+    }
 
     let code = exec(&ssh, command, timeout).map_err(Exec)?;
 

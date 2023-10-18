@@ -62,7 +62,7 @@ aws-ec2 \
 By default it boots 2 instances (`t2.medium` Ubuntu 22.04 and `t4g.medium` Ubuntu 22.04) and runs the command `cat /proc/cpuinfo && uname -a && ls`.
 
 ```
-jonathan@jonathan-Latitude-9510:~/Projects/aws-ec2$ AWS_ACCESS_KEY_ID=<public key> AWS_SECRET_ACCESS_KEY=<secret key> AWS_DEFAULT_REGION=eu-west-2 cargo run
+jonathan@jonathan-Latitude-9510:~/Projects/aws-ec2$ AWS_ACCESS_KEY_ID=<public key> AWS_SECRET_ACCESS_KEY=<secret key> AWS_DEFAULT_REGION=eu-west-2 cargo run --path ./
    Compiling aws-ec2 v0.1.0 (/home/jonathan/Projects/aws-ec2)
     Finished dev [unoptimized + debuginfo] target(s) in 18.82s
      Running `target/debug/aws-ec2`
