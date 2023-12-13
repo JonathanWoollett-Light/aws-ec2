@@ -9,10 +9,12 @@ use clap::Parser;
 use ec2::types::InstanceType;
 use flate2::write::GzEncoder;
 use flate2::Compression;
+use std::fs::OpenOptions;
 use std::io::ErrorKind::WouldBlock;
 use std::io::Read;
 use std::io::Write;
 use std::path::Path;
+use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::Arc;
 use std::thread::sleep;
@@ -64,6 +66,9 @@ type VolumeSize = u16;
 struct Args {
     #[arg(long)]
     path: Option<String>,
+    /// The directory to store the results.
+    #[arg(long)]
+    output_path: Option<PathBuf>,
     /// Name of the SSH key pair used.
     #[arg(long)]
     key_name: Option<String>,
@@ -194,92 +199,13 @@ enum ExecError {
 
 #[tokio::main]
 async fn main() -> Result<(), MainError> {
-    tracing_subscriber::fmt().init();
-
-    let (key_name, timeout, security_group_name, instances, command, path, size) = parse_args();
-
-    let result = create_resources(
-        key_name,
-        instances,
-        security_group_name,
-        timeout,
-        command,
-        path,
-        size,
-    )
-    .await?;
-
-    println!("results: {result:?}");
-
-    Ok(())
-}
-
-fn parse_args() -> (
-    String,
-    Duration,
-    String,
-    Vec<(InstanceType, String)>,
-    String,
-    Option<String>,
-    VolumeSize,
-) {
-    info!("Parsing command line arguments");
-    let args = Args::parse();
-
-    let key_name = args
-        .key_name
-        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
-    let timeout = Duration::from_secs(args.timeout.unwrap_or(DEFAULT_COMMAND_TIMEOUT_SECS));
-    let security_group_name = args
-        .security_group_name
-        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
-
-    let instances = {
-        assert_eq!(args.instances.len(), args.amis.len());
-        let mut instances = args
-            .instances
-            .into_iter()
-            .zip(args.amis)
-            .collect::<Vec<_>>();
-        if instances.is_empty() {
-            instances = DEFAULT_INSTANCES
-                .iter()
-                .cloned()
-                .map(|(i, a)| (i, String::from(a)))
-                .collect();
-        }
-        instances
-    };
-
-    let command = args
-        .command
-        .unwrap_or_else(|| String::from(DEFAULT_COMMAND));
-    let path = args.path;
-    let size = args.size.unwrap_or(DEFAULT_SIZE);
-
-    (
-        key_name,
-        timeout,
-        security_group_name,
-        instances,
-        command,
-        path,
-        size,
-    )
-}
-
-#[allow(clippy::too_many_lines)]
-async fn create_resources(
-    key_name: String,
-    instances: Vec<(ec2::types::InstanceType, String)>,
-    security_group_name: String,
-    timeout: Duration,
-    command: String,
-    path: Option<String>,
-    size: VolumeSize,
-) -> Result<Vec<Option<i32>>, MainError> {
     #[allow(clippy::enum_glob_use)]
     use MainError::*;
+
+    tracing_subscriber::fmt().init();
+
+    let (key_name, output_path, timeout, security_group_name, instances, command, path, size) =
+        parse_args();
 
     info!("Loading aws config");
     let config = aws_config::load_from_env().await;
@@ -340,8 +266,14 @@ async fn create_resources(
 
     for (instance_type, ami) in instances {
         let data_clone = data.clone();
-        let handle =
-            tokio::task::spawn(async { run_instance(data_clone, instance_type, ami).await });
+        let instance_output_path = output_path.join(format!("{instance_type:?}-{ami}"));
+        if !instance_output_path.exists() {
+            std::fs::create_dir(&instance_output_path).unwrap();
+        }
+
+        let handle = tokio::task::spawn(async {
+            run_instance(data_clone, instance_type, ami, instance_output_path).await
+        });
         handles.push(handle);
     }
 
@@ -350,6 +282,7 @@ async fn create_resources(
         let code = handle.await.unwrap()?;
         codes.push(code);
     }
+    info!("codes: {codes:?}");
 
     let (client, key_name, security_group_id, _timeout, _path, _key_material, _command, _size) =
         &*data;
@@ -369,10 +302,69 @@ async fn create_resources(
         .set_group_id(Some(security_group_id.clone()));
     builder.send().await.map_err(DeleteSecurityGroup)?;
 
-    Ok(codes)
+    Ok(())
 }
 
-#[tracing::instrument(skip(data))]
+fn parse_args() -> (
+    String,
+    PathBuf,
+    Duration,
+    String,
+    Vec<(InstanceType, String)>,
+    String,
+    Option<String>,
+    VolumeSize,
+) {
+    info!("Parsing command line arguments");
+    let args = Args::parse();
+
+    let key_name = args
+        .key_name
+        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+    let output_path = args
+        .output_path
+        .unwrap_or_else(|| std::path::PathBuf::from("/tmp"));
+    let timeout = Duration::from_secs(args.timeout.unwrap_or(DEFAULT_COMMAND_TIMEOUT_SECS));
+    let security_group_name = args
+        .security_group_name
+        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+
+    let instances = {
+        assert_eq!(args.instances.len(), args.amis.len());
+        let mut instances = args
+            .instances
+            .into_iter()
+            .zip(args.amis)
+            .collect::<Vec<_>>();
+        if instances.is_empty() {
+            instances = DEFAULT_INSTANCES
+                .iter()
+                .cloned()
+                .map(|(i, a)| (i, String::from(a)))
+                .collect();
+        }
+        instances
+    };
+
+    let command = args
+        .command
+        .unwrap_or_else(|| String::from(DEFAULT_COMMAND));
+    let path = args.path;
+    let size = args.size.unwrap_or(DEFAULT_SIZE);
+
+    (
+        key_name,
+        output_path,
+        timeout,
+        security_group_name,
+        instances,
+        command,
+        path,
+        size,
+    )
+}
+
+#[tracing::instrument(skip(data, output_path))]
 async fn run_instance(
     data: Arc<(
         ec2::Client,
@@ -384,8 +376,9 @@ async fn run_instance(
         String,
         VolumeSize,
     )>,
-    instance_type: InstanceType,
+    instance: InstanceType,
     ami: String,
+    output_path: PathBuf,
 ) -> Result<Option<i32>, MainError> {
     #[allow(clippy::enum_glob_use)]
     use MainError::*;
@@ -395,7 +388,7 @@ async fn run_instance(
     // Launches instance
     let (public_ip_address, instance_id) = launch_instance(
         client,
-        instance_type,
+        instance,
         ami,
         key_name,
         security_group_id,
@@ -409,10 +402,17 @@ async fn run_instance(
 
     // Transfers source code
     if let Some(path) = path {
-        transfer_source(path, &remote_path, &ssh, timeout).await?;
+        transfer_source(path, &remote_path, &ssh, timeout, output_path.clone()).await?;
     }
 
-    let code = exec(&ssh, command, timeout).map_err(Exec)?;
+    let code = exec(
+        &ssh,
+        command,
+        timeout,
+        output_path.join("stdout"),
+        output_path.join("stderr"),
+    )
+    .map_err(Exec)?;
 
     info!("Sleeping for {RUN_BUFFER:?}.");
     sleep(RUN_BUFFER);
@@ -594,11 +594,15 @@ async fn launch_instance(
             [ec2::types::Reservation {
                 instances: Some(instance_descriptions),
                 ..
-            }]) if let [ec2::types::Instance {
-                public_ip_address: Some(public_ip_address),
-                ..
-            }] = instance_descriptions.as_slice() => public_ip_address,
-            _ => return Err(DescribeInstancesPublicIpAddress),
+            }],
+        ) if let [ec2::types::Instance {
+            public_ip_address: Some(public_ip_address),
+            ..
+        }] = instance_descriptions.as_slice() =>
+        {
+            public_ip_address
+        }
+        _ => return Err(DescribeInstancesPublicIpAddress),
     };
 
     Ok((public_ip_address.clone(), instance_id.clone()))
@@ -645,6 +649,7 @@ async fn transfer_source(
     remote_path: &str,
     ssh: &ssh2::Session,
     timeout: &Duration,
+    output_path: PathBuf,
 ) -> Result<(), MainError> {
     #[allow(clippy::enum_glob_use)]
     use MainError::*;
@@ -718,7 +723,16 @@ async fn transfer_source(
     }
 
     info!("Decompressing source");
-    let Some(code) = exec(ssh, &format!("tar -xf {remote_path}"), timeout).map_err(Exec)? else {
+
+    let Some(code) = exec(
+        ssh,
+        &format!("tar -xf {remote_path}"),
+        timeout,
+        output_path.join("decomp-stdout"),
+        output_path.join("decomp-stderr"),
+    )
+    .map_err(Exec)?
+    else {
         return Err(DecompressTimeout);
     };
     if code != 0 {
@@ -731,6 +745,8 @@ fn exec(
     session: &ssh2::Session,
     command: &str,
     timeout: &Duration,
+    stdout: PathBuf,
+    stderr: PathBuf,
 ) -> Result<Option<i32>, ExecError> {
     #[allow(clippy::enum_glob_use)]
     use ExecError::*;
@@ -771,13 +787,15 @@ fn exec(
     // Stdout
     // ---------------------------------------------------------------------------------------------
     let timeout_stdout = *timeout;
+    info!("stdout: {}", stdout.display());
     let stdout_handle = std::thread::spawn(move || {
-        let mut stdout = Vec::new();
+        let mut stdout = OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .open(stdout)
+            .unwrap();
         loop {
-            if start.elapsed() > timeout_stdout {
-                break;
-            }
-
             let mut buffer = [u8::default(); 1024];
             let n = match channel.read(&mut buffer) {
                 Ok(0) => break,
@@ -789,14 +807,20 @@ fn exec(
             stdout.write_all(&buffer[..n]).unwrap();
         }
 
-        Ok((channel, stdout))
+        Ok(channel)
     });
 
     // Stderr
     // ---------------------------------------------------------------------------------------------
     let timeout_stderr = *timeout;
+    info!("stderr: {}", stderr.display());
     let stderr_handle = std::thread::spawn(move || {
-        let mut stderr = Vec::new();
+        let mut stderr = OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .open(stderr)
+            .unwrap();
         loop {
             if start.elapsed() > timeout_stderr {
                 break;
@@ -812,15 +836,17 @@ fn exec(
 
             stderr.write_all(&buffer[..n]).unwrap();
         }
-        Ok(stderr)
+        Ok(())
     });
 
     // Wait
     // ---------------------------------------------------------------------------------------------
-    let (mut channel, stdout) = stdout_handle.join().unwrap()?;
-    info!("stdout: {:?}", std::str::from_utf8(&stdout).unwrap());
-    let stderr = stderr_handle.join().unwrap()?;
-    info!("stderr: {:?}", std::str::from_utf8(&stderr).unwrap());
+    let (stdout_result, stderr_result) = (stdout_handle.join(), stderr_handle.join());
+
+    let mut channel = stdout_result.unwrap()?;
+    info!("Joined stdout");
+    stderr_result.unwrap()?;
+    info!("Joined stderr");
 
     // Exit
     // ---------------------------------------------------------------------------------------------
