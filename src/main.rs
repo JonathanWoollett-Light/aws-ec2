@@ -9,14 +9,14 @@ use clap::Parser;
 use ec2::types::InstanceType;
 use flate2::write::GzEncoder;
 use flate2::Compression;
-use std::fs::OpenOptions;
+
 use std::io::ErrorKind::WouldBlock;
 use std::io::Read;
 use std::io::Write;
 use std::path::Path;
-use std::path::PathBuf;
+
 use std::str::FromStr;
-use std::sync::Arc;
+
 use std::thread::sleep;
 use std::time::Duration;
 use std::time::Instant;
@@ -25,13 +25,6 @@ use tracing::info;
 /// <https://github.com/libssh2/libssh2/blob/master/include/libssh2.h>
 const LIBSSH2_ERROR_EAGAIN: i32 = -37;
 const SSH2_WOULD_BLOCK: ssh2::ErrorCode = ssh2::ErrorCode::Session(LIBSSH2_ERROR_EAGAIN);
-
-/// t2.micro
-/// Ubuntu 22.04 LTS
-const DEFAULT_INSTANCES: [(InstanceType, &str); 2] = [
-    (InstanceType::T2Medium, "ami-0eb260c4d5475b901"),
-    (InstanceType::T4gMedium, "ami-0e3f80b3d2a794117"),
-];
 
 /// The default port used by ec2 for ssh.
 const EC2_SSH_PORT: VolumeSize = 22;
@@ -66,9 +59,6 @@ type VolumeSize = u16;
 struct Args {
     #[arg(long)]
     path: Option<String>,
-    /// The directory to store the results.
-    #[arg(long)]
-    output_path: Option<PathBuf>,
     /// Name of the SSH key pair used.
     #[arg(long)]
     key_name: Option<String>,
@@ -84,12 +74,12 @@ struct Args {
     /// The size in GB of each EBS volume to attach to each instance.
     #[arg(long)]
     size: Option<VolumeSize>,
-    /// The EC2 instance types and AMI to use to launch instances.
-    #[arg(long, value_delimiter = ',')]
-    instances: Vec<InstanceType>,
-    /// The EC2 instance types and AMI to use to launch instances.
-    #[arg(long, value_delimiter = ',')]
-    amis: Vec<String>,
+    /// The EC2 instance type.
+    #[arg(long)]
+    instance: InstanceType,
+    /// The EC2 AMI.
+    #[arg(long)]
+    ami: String,
 }
 
 type SdkResponse = http::response::Response<aws_smithy_http::body::SdkBody>;
@@ -204,7 +194,7 @@ async fn main() -> Result<(), MainError> {
 
     tracing_subscriber::fmt().init();
 
-    let (key_name, output_path, timeout, security_group_name, instances, command, path, size) =
+    let (key_name, timeout, security_group_name, instance_type, ami, command, path, size) =
         parse_args();
 
     info!("Loading aws config");
@@ -224,7 +214,7 @@ async fn main() -> Result<(), MainError> {
     // The default settings prevent SSH working.
     let builder = client
         .create_security_group()
-        .set_group_name(Some(security_group_name))
+        .set_group_name(Some(security_group_name.clone()))
         .set_description(Some(String::from(SECURITY_GROUP_DESCRIPTION)));
     let create_security_group_response = builder.send().await.map_err(CreateSecurityGroup)?;
     let security_group_id = create_security_group_response
@@ -245,47 +235,20 @@ async fn main() -> Result<(), MainError> {
         .await
         .map_err(AuthorizeSecurityGroupIngress)?;
 
-    // TODO To check the rule is added to the security group, we need to check the rule is present
-    // in the response list of rules added. Do this check.
-
-    // Create instances
-    let mut handles = Vec::new();
-
-    // Do to issues with tokio and rustlang, it is not smart enough to figure out passing
-    // referneces is fine so we need to clone this data.
-    let data = Arc::new((
-        client,
-        key_name,
-        security_group_id,
-        timeout,
-        path,
-        key_material,
-        command,
-        size,
-    ));
-
-    for (instance_type, ami) in instances {
-        let data_clone = data.clone();
-        let instance_output_path = output_path.join(format!("{instance_type:?}-{ami}"));
-        if !instance_output_path.exists() {
-            std::fs::create_dir(&instance_output_path).unwrap();
-        }
-
-        let handle = tokio::task::spawn(async {
-            run_instance(data_clone, instance_type, ami, instance_output_path).await
-        });
-        handles.push(handle);
-    }
-
-    let mut codes = Vec::new();
-    for handle in handles {
-        let code = handle.await.unwrap()?;
-        codes.push(code);
-    }
-    info!("codes: {codes:?}");
-
-    let (client, key_name, security_group_id, _timeout, _path, _key_material, _command, _size) =
-        &*data;
+    let code = run_instance(
+        &client,
+        &key_name,
+        &security_group_name,
+        &timeout,
+        &path,
+        &key_material,
+        &command,
+        &size,
+        &instance_type,
+        &ami,
+    )
+    .await;
+    info!("code: {code:?}");
 
     info!("Deleting key pair");
     let builder = client
@@ -307,10 +270,10 @@ async fn main() -> Result<(), MainError> {
 
 fn parse_args() -> (
     String,
-    PathBuf,
     Duration,
     String,
-    Vec<(InstanceType, String)>,
+    InstanceType,
+    String,
     String,
     Option<String>,
     VolumeSize,
@@ -321,30 +284,10 @@ fn parse_args() -> (
     let key_name = args
         .key_name
         .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
-    let output_path = args
-        .output_path
-        .unwrap_or_else(|| std::path::PathBuf::from("/tmp"));
     let timeout = Duration::from_secs(args.timeout.unwrap_or(DEFAULT_COMMAND_TIMEOUT_SECS));
     let security_group_name = args
         .security_group_name
         .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
-
-    let instances = {
-        assert_eq!(args.instances.len(), args.amis.len());
-        let mut instances = args
-            .instances
-            .into_iter()
-            .zip(args.amis)
-            .collect::<Vec<_>>();
-        if instances.is_empty() {
-            instances = DEFAULT_INSTANCES
-                .iter()
-                .cloned()
-                .map(|(i, a)| (i, String::from(a)))
-                .collect();
-        }
-        instances
-    };
 
     let command = args
         .command
@@ -354,36 +297,31 @@ fn parse_args() -> (
 
     (
         key_name,
-        output_path,
         timeout,
         security_group_name,
-        instances,
+        args.instance,
+        args.ami,
         command,
         path,
         size,
     )
 }
 
-#[tracing::instrument(skip(data, output_path))]
+#[allow(clippy::too_many_arguments)]
 async fn run_instance(
-    data: Arc<(
-        ec2::Client,
-        String,
-        String,
-        Duration,
-        Option<String>,
-        String,
-        String,
-        VolumeSize,
-    )>,
-    instance: InstanceType,
-    ami: String,
-    output_path: PathBuf,
+    client: &ec2::Client,
+    key_name: &str,
+    security_group_id: &str,
+    timeout: &Duration,
+    path: &Option<String>,
+    private_key: &str,
+    command: &str,
+    size: &VolumeSize,
+    instance: &InstanceType,
+    ami: &str,
 ) -> Result<Option<i32>, MainError> {
     #[allow(clippy::enum_glob_use)]
     use MainError::*;
-
-    let (client, key_name, security_group_id, timeout, path, private_key, command, size) = &*data;
 
     // Launches instance
     let (public_ip_address, instance_id) = launch_instance(
@@ -402,17 +340,10 @@ async fn run_instance(
 
     // Transfers source code
     if let Some(path) = path {
-        transfer_source(path, &remote_path, &ssh, timeout, output_path.clone()).await?;
+        transfer_source(path, &remote_path, &ssh, timeout).await?;
     }
 
-    let code = exec(
-        &ssh,
-        command,
-        timeout,
-        output_path.join("stdout"),
-        output_path.join("stderr"),
-    )
-    .map_err(Exec)?;
+    let code = exec(&ssh, command, timeout).map_err(Exec)?;
 
     info!("Sleeping for {RUN_BUFFER:?}.");
     sleep(RUN_BUFFER);
@@ -541,8 +472,8 @@ const DEFAULT_BLOCK_DEVICE_NAME: &str = "/dev/sdh";
 /// Launches an EC2 instance and returns the public ip address.
 async fn launch_instance(
     client: &ec2::Client,
-    instance_type: InstanceType,
-    ami: String,
+    instance_type: &InstanceType,
+    ami: &str,
     key_name: &str,
     security_group_id: &str,
     timeout: &Duration,
@@ -554,8 +485,8 @@ async fn launch_instance(
     info!("Launching instances");
     let builder = client
         .run_instances()
-        .set_instance_type(Some(instance_type))
-        .set_image_id(Some(ami))
+        .set_instance_type(Some(instance_type.clone()))
+        .set_image_id(Some(String::from(ami)))
         .set_max_count(Some(1))
         .set_min_count(Some(1))
         .set_key_name(Some(String::from(key_name)))
@@ -649,7 +580,6 @@ async fn transfer_source(
     remote_path: &str,
     ssh: &ssh2::Session,
     timeout: &Duration,
-    output_path: PathBuf,
 ) -> Result<(), MainError> {
     #[allow(clippy::enum_glob_use)]
     use MainError::*;
@@ -724,15 +654,7 @@ async fn transfer_source(
 
     info!("Decompressing source");
 
-    let Some(code) = exec(
-        ssh,
-        &format!("tar -xf {remote_path}"),
-        timeout,
-        output_path.join("decomp-stdout"),
-        output_path.join("decomp-stderr"),
-    )
-    .map_err(Exec)?
-    else {
+    let Some(code) = exec(ssh, &format!("tar -xf {remote_path}"), timeout).map_err(Exec)? else {
         return Err(DecompressTimeout);
     };
     if code != 0 {
@@ -745,8 +667,6 @@ fn exec(
     session: &ssh2::Session,
     command: &str,
     timeout: &Duration,
-    stdout: PathBuf,
-    stderr: PathBuf,
 ) -> Result<Option<i32>, ExecError> {
     #[allow(clippy::enum_glob_use)]
     use ExecError::*;
@@ -787,14 +707,8 @@ fn exec(
     // Stdout
     // ---------------------------------------------------------------------------------------------
     let timeout_stdout = *timeout;
-    info!("stdout: {}", stdout.display());
     let stdout_handle = std::thread::spawn(move || {
-        let mut stdout = OpenOptions::new()
-            .create(true)
-            .write(true)
-            .truncate(true)
-            .open(stdout)
-            .unwrap();
+        let mut stdout = std::io::stdout();
         loop {
             let mut buffer = [u8::default(); 1024];
             let n = match channel.read(&mut buffer) {
@@ -813,14 +727,8 @@ fn exec(
     // Stderr
     // ---------------------------------------------------------------------------------------------
     let timeout_stderr = *timeout;
-    info!("stderr: {}", stderr.display());
     let stderr_handle = std::thread::spawn(move || {
-        let mut stderr = OpenOptions::new()
-            .create(true)
-            .write(true)
-            .truncate(true)
-            .open(stderr)
-            .unwrap();
+        let mut stderr = std::io::stderr();
         loop {
             if start.elapsed() > timeout_stderr {
                 break;

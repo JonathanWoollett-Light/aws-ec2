@@ -14,6 +14,10 @@ fn hello_world() {
 
     let output = Command::new(BINARY)
         .args([
+            "--instance",
+            "t2.medium",
+            "--ami",
+            "ami-0eb260c4d5475b901",
             "--path",
             &project_path,
             "--command",

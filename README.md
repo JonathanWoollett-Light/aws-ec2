@@ -25,14 +25,13 @@ The process approximately follows:
 1. Creates key pair.
 2. Creates security group.
 3. If `--path` is given compresses directory into a `.tar.gz` archive.
-4. For each pair from `--instances` and `--amis`:
-   1. Start the instance.
-   2. If `--path` is given copy across the `.tar.gz` archive.
-   3. If `--path` is given decompress `.tar.gz` archive.
-   4. Run `--command`.
-   5. Terminate instance.
-5. Delete key pair.
-6. Delete security group.
+4. Start the instance.
+5. If `--path` is given copy across the `.tar.gz` archive.
+6. If `--path` is given decompress `.tar.gz` archive.
+7. Run `--command`.
+8. Terminate instance.
+9. Delete key pair.
+10. Delete security group.
 
 ### Installation
 
@@ -45,28 +44,27 @@ cargo +nightly install aws-ec2
 
 #### Default
 
-By default it boots 2 instances (`t2.medium` Ubuntu 22.04 and `t4g.medium` Ubuntu 22.04) and runs the command `cat /proc/cpuinfo && uname -a && ls`.
+By default it runs the command `cat /proc/cpuinfo && uname -a && ls`.
 
 ```
 AWS_ACCESS_KEY_ID=<public key> \
 AWS_SECRET_ACCESS_KEY=<private key> \
 AWS_DEFAULT_REGION=eu-west-2 \
-aws-ec2
-"
+aws-ec2 --instance t2.medium --ami ami-0eb260c4d5475b901
 ```
 
 #### Rust Hello World!
 
-Running `Hello World!` on `t2.medium` Ubuntu 22.04 and `t4g.medium` Ubuntu 22.04 with 32gb EBS volumes you could run:
+Running `Hello World!` on `t2.medium` Ubuntu 22.04 with 32gb EBS volumes you could run:
 
 ```
 AWS_ACCESS_KEY_ID=<public key> \
 AWS_SECRET_ACCESS_KEY=<private key> \
 AWS_DEFAULT_REGION=eu-west-2 \
-aws-ec2 -- \
+aws-ec2 \
 --size 32 \
---instances t2.medium,t4g.medium \
---amis ami-0eb260c4d5475b901,ami-0e3f80b3d2a794117 \
+--instance t2.medium \
+--ami ami-0eb260c4d5475b901 \
 --command "\
     echo \"debconf debconf/frontend select Noninteractive\" | sudo debconf-set-selections \
     && sudo apt-get -y update \
@@ -86,10 +84,10 @@ If you wanted to test your code on `t2.medium` Ubuntu 22.04 and `t4g.medium` Ubu
 AWS_ACCESS_KEY_ID=<public key> \
 AWS_SECRET_ACCESS_KEY=<private key> \
 AWS_DEFAULT_REGION=eu-west-2 \
-aws-ec2 -- \
+aws-ec2 \
 --size 32 \
---instances t2.medium,t4g.medium \
---amis ami-0eb260c4d5475b901,ami-0e3f80b3d2a794117 \
+--instance t2.medium \
+--ami ami-0eb260c4d5475b901 \
 --command "\
     echo \"debconf debconf/frontend select Noninteractive\" | sudo debconf-set-selections \
     && sudo apt-get -y update \
@@ -107,10 +105,10 @@ if you want to use your local files you could run:
 AWS_ACCESS_KEY_ID=<public key> \
 AWS_SECRET_ACCESS_KEY=<private key> \
 AWS_DEFAULT_REGION=eu-west-2 \
-aws-ec2 -- \
+aws-ec2 \
 --size 32 \
---instances t2.medium,t4g.medium \
---amis ami-0eb260c4d5475b901,ami-0e3f80b3d2a794117 \
+--instance t2.medium,t4g.medium \
+--ami ami-0eb260c4d5475b901,ami-0e3f80b3d2a794117 \
 --path <path to your project>
 --command "\
     echo \"debconf debconf/frontend select Noninteractive\" | sudo debconf-set-selections \
