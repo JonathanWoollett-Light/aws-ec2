@@ -41,10 +41,10 @@ const RUN_BUFFER: Duration = Duration::from_secs(30);
 // TODO Replace this with polling.
 const SSH_STARTUP_BUFFER: Duration = Duration::from_secs(20);
 
-// TODO Replace this with polling so it doesn't need to wait longer than neccessary.
-/// We need to wait a long time for the instance to be terminated and for the security group to lose
-/// its dependency so it can be deleted.
-const DELETE_SECURITY_GROUP_BUFFER: Duration = Duration::from_secs(180);
+// // TODO Replace this with polling so it doesn't need to wait longer than neccessary.
+// /// We need to wait a long time for the instance to be terminated and for the security group to lose
+// /// its dependency so it can be deleted.
+// const DELETE_SECURITY_GROUP_BUFFER: Duration = Duration::from_secs(120);
 
 const DEFAULT_COMMAND_TIMEOUT_SECS: u64 = 300;
 
@@ -160,8 +160,10 @@ enum MainError {
     TerminateInstances(SdkError<aws_sdk_ec2::operation::terminate_instances::TerminateInstancesError>),
     #[error("Failed to delete key pair: {0}")]
     DeleteKeyPair(SdkError<aws_sdk_ec2::operation::delete_key_pair::DeleteKeyPairError>),
-    #[error("Failed to delete security group: {0}")]
-    DeleteSecurityGroup(SdkError<aws_sdk_ec2::operation::delete_security_group::DeleteSecurityGroupError>),
+    // #[error("Failed to delete network interface: {0}")]
+    // DeleteNetworkInterface(SdkError<aws_sdk_ec2::operation::delete_network_interface::DeleteNetworkInterfaceError>),
+    // #[error("Failed to delete security group: {0}")]
+    // DeleteSecurityGroup(SdkError<aws_sdk_ec2::operation::delete_security_group::DeleteSecurityGroupError>),
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -253,14 +255,22 @@ async fn main() -> Result<(), MainError> {
         .set_key_name(Some(key_name.clone()));
     builder.send().await.map_err(DeleteKeyPair)?;
 
-    info!("Sleeping for {DELETE_SECURITY_GROUP_BUFFER:?}.");
-    sleep(DELETE_SECURITY_GROUP_BUFFER);
+    // TODO: Delete the created security group.
+    // See the below commented out code.
 
-    info!("Deleting security group");
-    let builder = client
-        .delete_security_group()
-        .set_group_id(Some(security_group_id.clone()));
-    builder.send().await.map_err(DeleteSecurityGroup)?;
+    // info!("Deleting network interface");
+    // let network_interface_id = todo!();
+    // let builder = client.delete_network_interface().set_network_interface_id(input);
+    // builder.send().await.map_err(DeleteNetworkInterface)?;
+
+    // info!("Sleeping for {DELETE_SECURITY_GROUP_BUFFER:?}.");
+    // sleep(DELETE_SECURITY_GROUP_BUFFER);
+
+    // info!("Deleting security group");
+    // let builder = client
+    //     .delete_security_group()
+    //     .set_group_id(Some(security_group_id.clone()));
+    // builder.send().await.map_err(DeleteSecurityGroup)?;
 
     Ok(())
 }
