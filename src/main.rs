@@ -202,7 +202,6 @@ async fn main() -> ExitCode {
     }
 }
 
-#[tokio::main]
 async fn main_exec() -> Result<Option<i32>, MainError> {
     #[allow(clippy::enum_glob_use)]
     use MainError::*;
