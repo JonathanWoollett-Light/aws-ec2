@@ -9,6 +9,7 @@ use clap::Parser;
 use ec2::types::InstanceType;
 use flate2::write::GzEncoder;
 use flate2::Compression;
+use std::io::ErrorKind;
 
 use std::io::ErrorKind::WouldBlock;
 use std::io::Read;
@@ -21,10 +22,6 @@ use std::thread::sleep;
 use std::time::Duration;
 use std::time::Instant;
 use tracing::info;
-
-/// <https://github.com/libssh2/libssh2/blob/master/include/libssh2.h>
-const LIBSSH2_ERROR_EAGAIN: i32 = -37;
-const SSH2_WOULD_BLOCK: ssh2::ErrorCode = ssh2::ErrorCode::Session(LIBSSH2_ERROR_EAGAIN);
 
 /// The default port used by ec2 for ssh.
 const EC2_SSH_PORT: VolumeSize = 22;
@@ -120,11 +117,11 @@ enum MainError {
     #[error("Failed to create SSH session: {0}")]
     SshSession(ssh2::Error),
     #[error("Failed SSH handshake: {0}")]
-    SshHandshake(ssh2::Error),
+    SshHandshake(std::io::Error),
     #[error("Timed out attempting SSH handshake.")]
     SshHandshakeTimeout,
     #[error("Failed to setup SSH auth: {0}")]
-    SshAuthSetup(ssh2::Error),
+    SshAuthSetup(std::io::Error),
     #[error("Failed SSH auth.")]
     SshAuthFailed,
     #[error("Failed to read directory: {0}")]
@@ -140,19 +137,19 @@ enum MainError {
     #[error("Failed to complete archive: {0}")]
     CompleteArchive(std::io::Error),
     #[error("Failed to start scp: {0}")]
-    ScpSend(ssh2::Error),
+    ScpSend(std::io::Error),
     #[error("Failed to write to scp: {0}")]
     ScpWrite(std::io::Error),
     #[error("Failed to send eof to scp: {0}")]
     ScpSendEof(ssh2::Error),
     #[error("Failed to wait on eof on scp: {0}")]
-    ScpWaitEof(ssh2::Error),
+    ScpWaitEof(std::io::Error),
     #[error("Timed out waiting for scp eof.")]
     ScpEndOfFileTimeout,
     #[error("Failed to close scp: {0}")]
-    ScpClose(ssh2::Error),
+    ScpClose(std::io::Error),
     #[error("Failed to wait on close on scp: {0}")]
-    ScpWaitClose(ssh2::Error),
+    ScpWaitClose(std::io::Error),
     #[error("Failed to exec command: {0}")]
     Exec(ExecError),
     #[error("Decompress timed out.")]
@@ -170,11 +167,11 @@ enum MainError {
 #[derive(Debug, thiserror::Error)]
 enum ExecError {
     #[error("Failed to create channel: {0}")]
-    Channel(ssh2::Error),
+    Channel(std::io::Error),
     #[error("Timed out creating channel.")]
     ChannelTimeout,
     #[error("Failed exec: {0}")]
-    Exec(ssh2::Error),
+    Exec(std::io::Error),
     #[error("Timed out running exec.")]
     ExecTimeout,
     #[error("Failed to read stdout: {0}")]
@@ -182,7 +179,7 @@ enum ExecError {
     #[error("Failed to read stderr: {0}")]
     Stderr(std::io::Error),
     #[error("Failed to close channel: {0}")]
-    Close(ssh2::Error),
+    Close(std::io::Error),
     #[error("Failed to get exit code: {0}")]
     Exit(ssh2::Error),
 }
@@ -385,9 +382,9 @@ fn create_ssh(
     let start = Instant::now();
     info!("SSH handshake");
     loop {
-        match ssh.handshake() {
+        match ssh.handshake().map_err(std::io::Error::from) {
             Ok(()) => break,
-            Err(err) if err.code() == SSH2_WOULD_BLOCK => {
+            Err(err) if err.kind() == ErrorKind::WouldBlock => {
                 if start.elapsed() > *timeout {
                     return Err(SshHandshakeTimeout);
                 }
@@ -400,9 +397,12 @@ fn create_ssh(
     let start = Instant::now();
     info!("SSH authorize");
     loop {
-        match ssh.userauth_pubkey_memory("ubuntu", None, private_key, None) {
+        match ssh
+            .userauth_pubkey_memory("ubuntu", None, private_key, None)
+            .map_err(std::io::Error::from)
+        {
             Ok(()) => break,
-            Err(err) if err.code() == SSH2_WOULD_BLOCK => {
+            Err(err) if err.kind() == ErrorKind::WouldBlock => {
                 if start.elapsed() > *timeout {
                     return Err(SshHandshakeTimeout);
                 }
@@ -598,9 +598,12 @@ async fn transfer_source(
             return Err(SshHandshakeTimeout);
         }
 
-        match ssh.scp_send(Path::new(remote_path), 0o644, data.len() as u64, None) {
+        match ssh
+            .scp_send(Path::new(remote_path), 0o644, data.len() as u64, None)
+            .map_err(std::io::Error::from)
+        {
             Ok(c) => break c,
-            Err(err) if err.code() == SSH2_WOULD_BLOCK => continue,
+            Err(err) if err.kind() == ErrorKind::WouldBlock => continue,
             Err(err) => return Err(ScpSend(err)),
         }
     };
@@ -619,9 +622,9 @@ async fn transfer_source(
             return Err(ScpEndOfFileTimeout);
         }
 
-        match channel.wait_eof() {
+        match channel.wait_eof().map_err(std::io::Error::from) {
             Ok(()) => break,
-            Err(err) if err.code() == SSH2_WOULD_BLOCK => continue,
+            Err(err) if err.kind() == ErrorKind::WouldBlock => continue,
             Err(err) => return Err(ScpWaitEof(err)),
         }
     }
@@ -632,9 +635,9 @@ async fn transfer_source(
             return Err(ScpEndOfFileTimeout);
         }
 
-        match channel.close() {
+        match channel.close().map_err(std::io::Error::from) {
             Ok(()) => break,
-            Err(err) if err.code() == SSH2_WOULD_BLOCK => continue,
+            Err(err) if err.kind() == ErrorKind::WouldBlock => continue,
             Err(err) => return Err(ScpClose(err)),
         }
     }
@@ -645,9 +648,9 @@ async fn transfer_source(
             return Err(ScpEndOfFileTimeout);
         }
 
-        match channel.wait_close() {
+        match channel.wait_close().map_err(std::io::Error::from) {
             Ok(()) => break,
-            Err(err) if err.code() == SSH2_WOULD_BLOCK => continue,
+            Err(err) if err.kind() == ErrorKind::WouldBlock => continue,
             Err(err) => return Err(ScpWaitClose(err)),
         }
     }
@@ -680,9 +683,9 @@ fn exec(
             return Err(ChannelTimeout);
         }
 
-        match session.channel_session() {
+        match session.channel_session().map_err(std::io::Error::from) {
             Ok(c) => break c,
-            Err(err) if err.code() == SSH2_WOULD_BLOCK => continue,
+            Err(err) if err.kind() == ErrorKind::WouldBlock => continue,
             Err(err) => return Err(Channel(err)),
         }
     };
@@ -697,9 +700,9 @@ fn exec(
             return Err(ExecTimeout);
         }
 
-        match channel.exec(command) {
+        match channel.exec(command).map_err(std::io::Error::from) {
             Ok(()) => break,
-            Err(err) if err.code() == SSH2_WOULD_BLOCK => continue,
+            Err(err) if err.kind() == ErrorKind::WouldBlock => continue,
             Err(err) => return Err(Exec(err)),
         }
     }
@@ -764,9 +767,9 @@ fn exec(
             return Ok(None);
         }
 
-        match channel.wait_close() {
+        match channel.wait_close().map_err(std::io::Error::from) {
             Ok(()) => return Ok(Some(channel.exit_status().map_err(Exit)?)),
-            Err(err) if err.code() == SSH2_WOULD_BLOCK => continue,
+            Err(err) if err.kind() == ErrorKind::WouldBlock => continue,
             Err(err) => return Err(Close(err)),
         }
     }
