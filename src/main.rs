@@ -609,7 +609,18 @@ async fn transfer_source(
     };
 
     // Write archive to remote.
-    channel.write_all(data).map_err(ScpWrite)?;
+    let mut n = 0;
+    loop {
+        if start.elapsed() > *timeout {
+            return Err(SshHandshakeTimeout);
+        }
+        n += match channel.write(&data[n..]) {
+            Ok(0) if n == data.len() => break,
+            Ok(c) => c,
+            Err(err) if err.kind() == ErrorKind::WouldBlock => continue,
+            Err(err) => return Err(ScpWrite(err)),
+        };
+    }
 
     // Wait send ending for write of archive to remote.
     channel.send_eof().map_err(ScpSendEof)?;
