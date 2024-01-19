@@ -44,7 +44,7 @@ const SSH_STARTUP_BUFFER: Duration = Duration::from_secs(20);
 // TODO Replace this with polling so it doesn't need to wait longer than neccessary.
 /// We need to wait a long time for the instance to be terminated and for the security group to lose
 /// its dependency so it can be deleted.
-const DELETE_SECURITY_GROUP_BUFFER: Duration = Duration::from_secs(120);
+const DELETE_SECURITY_GROUP_BUFFER: Duration = Duration::from_secs(180);
 
 const DEFAULT_COMMAND_TIMEOUT_SECS: u64 = 300;
 
