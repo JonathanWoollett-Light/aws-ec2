@@ -189,7 +189,7 @@ enum ExecError {
 
 #[tokio::main]
 async fn main() -> ExitCode {
-    match main_exec() {
+    match main_exec().await {
         Err(err) => {
             eprintln!("Error: {err:?}");
             ExitCode::FAILURE
