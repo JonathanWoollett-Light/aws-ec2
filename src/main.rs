@@ -16,6 +16,7 @@ use std::io::Read;
 use std::io::Write;
 use std::path::Path;
 
+use std::process::ExitCode;
 use std::str::FromStr;
 
 use std::thread::sleep;
@@ -187,7 +188,22 @@ enum ExecError {
 }
 
 #[tokio::main]
-async fn main() -> Result<(), MainError> {
+async fn main() -> ExitCode {
+    match main_exec() {
+        Err(err) => {
+            eprintln!("Error: {err:?}");
+            ExitCode::FAILURE
+        }
+        Ok(None) => {
+            eprintln!("Command timeout");
+            ExitCode::FAILURE
+        }
+        Ok(Some(code)) => ExitCode::from(u8::try_from(code).unwrap()),
+    }
+}
+
+#[tokio::main]
+async fn main_exec() -> Result<Option<i32>, MainError> {
     #[allow(clippy::enum_glob_use)]
     use MainError::*;
 
@@ -246,7 +262,7 @@ async fn main() -> Result<(), MainError> {
         &instance_type,
         &ami,
     )
-    .await;
+    .await?;
     info!("code: {code:?}");
 
     info!("Deleting key pair");
@@ -272,7 +288,7 @@ async fn main() -> Result<(), MainError> {
     //     .set_group_id(Some(security_group_id.clone()));
     // builder.send().await.map_err(DeleteSecurityGroup)?;
 
-    Ok(())
+    Ok(code)
 }
 
 fn parse_args() -> (
