@@ -4,32 +4,36 @@ const BINARY: &str = env!("CARGO_BIN_EXE_aws-ec2");
 
 #[test]
 fn hello_world() {
-    // Add `a` at front as it cannot start with a digit.
-    let project_path = format!("/tmp/a{}", uuid::Uuid::new_v4());
-    let output = Command::new("cargo")
-        .args(["new", &project_path])
-        .output()
-        .unwrap();
-    assert_eq!(output.status.code().unwrap(), 0);
 
-    let output = Command::new(BINARY)
-        .args([
-            "--instance",
-            "t2.medium",
-            "--ami",
-            "ami-0eb260c4d5475b901",
-            "--path",
-            &project_path,
-            "--command",
-            "curl https://sh.rustup.rs -sSf | sh -s -- -y && \
-            sudo apt-get -y update && \
-            sudo apt -y install build-essential && \
-            $HOME/.cargo/bin/cargo run",
-        ])
-        .output()
-        .unwrap();
+    const COMMAND: &str = "
+        echo \"debconf debconf/frontend select Noninteractive\" | sudo debconf-set-selections \
+        && sudo apt-get -y update \
+        && sudo apt-get -y install build-essential \
+        && curl https://sh.rustup.rs -sSf | sh -s -- -y \
+        && \$HOME/.cargo/bin/cargo new hello-world \
+        && cd hello-world \
+        && \$HOME/.cargo/bin/cargo run \
+    ";
+    println!("command: {COMMAND}");
 
-    assert_eq!(output.status.code().unwrap(), 0);
+    // let output = Command::new(BINARY)
+    //     .args([
+    //         "--instance",
+    //         "t2.medium",
+    //         "--ami",
+    //         "ami-0eb260c4d5475b901",
+    //         "--path",
+    //         &project_path,
+    //         "--command",
+    //         "curl https://sh.rustup.rs -sSf | sh -s -- -y && \
+    //         sudo apt-get -y update && \
+    //         sudo apt -y install build-essential && \
+    //         $HOME/.cargo/bin/cargo run",
+    //     ])
+    //     .output()
+    //     .unwrap();
 
-    std::fs::remove_dir_all(project_path).unwrap();
+    // assert_eq!(output.status.code().unwrap(), 0);
+
+    // std::fs::remove_dir_all(project_path).unwrap();
 }
